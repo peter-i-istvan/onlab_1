@@ -1,0 +1,51 @@
+Amiket eddig találtam:
+
+Alternatív forrás a dHCP 2nd data release torrent fájljaihoz:
+	https://academictorrents.com/browse.php?search=dhcp
+
+MRtrix: MRI alapú tractography tool (2008)
+	- C++, OpenGL
+	- input format: DICOM, Analyse, NIfTI etc.
+	
+Konnektom feltérképező app: ConnectomeMapper3 - használható, HA BIDS formátumban van a mappastruktúra
+	https://connectome-mapper-3.readthedocs.io/en/latest/
+	
+	- Tutorial notebook: Analysis Tutorial
+	https://connectome-mapper-3.readthedocs.io/en/latest/notebooks/analysis_tutorial.html
+	Arról szól, hogyan dolgozzunk már kész ConnectomeMapper3 outputtal.
+	Ezen a ponton már építhető szomszédsági mátrix különböző pareméterek (pl. fiber density) alapján
+	
+	EEG alapon is építhető Conncetivity Matrix:
+	https://connectome-mapper-3.readthedocs.io/en/latest/notebooks/EEG_pipeline_tutorial.html
+	
+	- "must include at least a T1w or MPRAGE structural image and a DWI [...]"
+	
+
+...ehhez kapcsolódóan: BIDS validátor és szabvány leírás:
+	http://bids-standard.github.io/bids-validator/
+	https://bids.neuroimaging.io/
+
+Connectome Workbench (hivatalos HCP tool)
+	https://www.humanconnectome.org/software/connectome-workbench
+	https://aur.archlinux.org/packages/connectome-workbench
+	Működik vajon dHCP-re?
+
+Egy másik pipeline, ami a 2nd data release dMRI fájljaiból dolgozik:
+	https://git.fmrib.ox.ac.uk/matteob/dHCP_neo_dMRI_pipeline_release
+	
+DHCP Structural pipeline:
+	https://github.com/BioMedIA/dhcp-structural-pipeline (legfrissebb maintainelt, egyetlen hivatalos DHCP repo)
+	
+Létezik fizetős tool is a feladatra:
+	https://support.qmenta.com/knowledge/dmri-structural-connectome
+	https://support.qmenta.com/knowledge/dmri-tractography
+	
+Egyéb connectivity dataset-ek:
+	https://sites.google.com/site/bctnet/datasets-and-demos
+	https://www.nature.com/articles/s41597-022-01596-9
+		88 emberi agy, conn. mx. + nyers MRI adat
+		
+https://www.neurodesk.org/tutorials/structural_imaging/structuralconnectivity/
+	
+KÖVETKEZŐ LÉPÉSEK:
+[ ] Kipróbálni a HPC2BIDS konvertert: https://github.com/suyashdb/hcp2bids
