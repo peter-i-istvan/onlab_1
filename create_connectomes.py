@@ -1,10 +1,18 @@
-# Run this script from a conda environment having mrtrix3 and FSL installed, Python >= 3.9
+# Run this script:
+# - from a conda environment having mrtrix3
+# - having FSL installed on your system
+# - having docker and the freesurfer/freesurfer:7.3.1 (or any specific version) image on your system:
+#   docker pull freesurfer/freesurfer:7.3.1
+# - Python >= 3.9
 import os
 import subprocess
+import matplotlib.pyplot as plt
+import pandas as pd
 
 ANAT_ROOT_PATH = '/run/media/i/ADATA HV620S/rel3_dhcp_anat_pipeline'
 DMRI_ROOT_PATH = '/run/media/i/ADATA HV620S/rel3_dhcp_dmri_eddy_pipeline'
 TARGET_ROOT_PATH = '/run/media/i/ADATA HV620S/connectomes'
+COMPLETED_JOBS_FOLDER = 'completed_jobs'
 
 
 class DWISession:
@@ -37,6 +45,10 @@ class DWISession:
         self.source_mask_nii_gz = os.path.join(
             self.source_dwi_folder,
             f'{self.subject_name}_{self.session_name}_desc-brain_mask.nii.gz'
+        )
+        self.source_FA_nii_gz = os.path.join(
+            self.source_dwi_folder,
+            f'{self.subject_name}_{self.session_name}_model-DTI_FA.nii.gz'
         )
 
         self.target_dwi_mif = os.path.join(self.session_target_root, 'dwi.mif')
@@ -166,6 +178,10 @@ class AnatomicalSession:
             self.source_anat_folder,
             f'{self.subject_name}_{self.session_name}_T1w.nii.gz'
         )
+        self.source_regional_segmentation_nii_gz = os.path.join(
+            self.source_anat_folder,
+            f'{self.subject_name}_{self.session_name}_desc-drawem87_dseg.nii.gz'
+        )
 
         self.target_t1w_mif = os.path.join(
             self.session_target_root,
@@ -213,8 +229,29 @@ class Session:
         self.target_boundary_seed_mif = os.path.join(self.session_target_root, 'gmwmSeed_coreg.mif')
         # Streamlines: 1M (the tutorial said 10M, but that is an adult brain)
         self.target_streamlines_1M = os.path.join(self.session_target_root, 'tracks_1M.tck')
-        # Subsample of streamlines:
+        # Subsample of streamlines for visualization purposes - can be skipped but good for diagnostic:
         self.target_streamlines_subsample = os.path.join(self.session_target_root, 'smallerTracks_500k.tck')
+        # SIFT proportionality coefficient (debug purposes):
+        self.target_sift_proportionality_coefficient = os.path.join(self.session_target_root, 'sift_mu.txt')
+        # SIFT output coefficients - I did not find what is this supposed to be in the tcksift2 command help page.
+        # Probably just for debug purposes:
+        self.target_sift_output_coefficients = os.path.join(self.session_target_root, 'sift_coeffs.txt')
+        # SIFT weights for each voxes - used at connectome creation
+        self.target_sift_track_weights = os.path.join(self.session_target_root, 'sift_track_weights.txt')
+        # The 4 types of connectomes generated:
+        self.target_weight_sum_connectome = os.path.join(self.session_target_root, 'weight_sum_connectome.csv')
+        self.target_volume_normalized_weight_sum_connectome = os.path.join(
+            self.session_target_root, 'volume_normalized_weight_sum_connectome.csv'
+        )
+        self.target_mean_FA_per_streamline_sample = os.path.join(
+            self.session_target_root, 'mean_FA_per_streamline.csv'
+        )
+        self.target_mean_FA_connectome = os.path.join(
+            self.session_target_root, 'mean_FA_connectome.csv'
+        )
+        self.target_mean_length_connectome = os.path.join(
+            self.session_target_root, 'mean_length_connectome.csv'
+        )
 
     def __get_mean_b0(self):
         '''Calculates mean signal values for bval=0 slices along the time axis.
@@ -351,50 +388,184 @@ class Session:
             subprocess.run(sample_command, capture_output=True, check=True)
             subprocess.run(view_command, capture_output=True, check=True)
 
-def main():
-    # I. Convert dwi NIFTI to .mif file
-    # II. Convert mask NIFTI to .mif file
-    # III. Run spherical deconv. to compute signal response in each tissue type, based on diffusion signal:
-    # - dhollander algorithm for multi-shell (bval) multi-tissue (gm, wm, csf)
-    # - additional output voxels.mif highlights which voxels were used to construct the signal response
-    #   - R=CSF, G=GM, B=WM
-    # IV. Calculate FOD based on the signal responses (basis functions) above
-    # V. (Optional) Concatenate and visualize FODs
-    # VI. Normalize FODs for proper group level usage (Do I need it in this use case?)
+    def sift_filltering(self, nthreads: int = 6):
+        '''From Andy's Brain Book:
+        Certain tracts can be over-represented by the amount of streamlines that pass through them
+        not necessarily because they contain more fibers, but because the fibers tend to all be orientated
+        in the same direction.
+        To counter-balance this overfitting, the command tcksift2 will create a text file
+        containing weights for each voxel in the brain. The output from the command, can be used [...]
+        to create a matrix [...] known as a connectome - which will weight each ROI.
 
-    # VII. Convert anatomical T1w NIFTI to .mif file
-    # VIII. Tissue segmentation in order to determine wm/gm boundary (interface)
-    # - The MRTrix guide provides a 5 tissue segmentation example: GM, Subcortical GM, WM, CSF, Pathological
-    # - dHCP provides a 9 tissue segmentation in a similar manner,
-    #   but mapping some tissues to the ones above is not trivial for me, so I will ditch that for the moment.
-    #   The official MRTrix docs encourage using 5TT.
-    # - I will use 5ttgen which uses FSL for this goal
-    # IX. Coregistration (divided into substeps)
-    # X. Apply tissue bundary
-    # XI. Generate streamlines
+        From the command's help page:
+        Filter a whole-brain fibre-tracking data set such that the streamline densities
+        match the FOD lobe integrals'''
+        command = [
+            'tcksift2',
+            '-act',
+            f'{self.target_5tt_coreg_mif}',
+            '-out_mu',
+            f'{self.target_sift_proportionality_coefficient}',
+            '-out_coeffs',
+            f'{self.target_sift_output_coefficients}',
+            '-nthreads',
+            str(nthreads),
+            f'{self.target_streamlines_1M}',
+            f'{self.dwi_session.target_normalized_wm_fod_mif}',
+            f'{self.target_sift_track_weights}'
+        ]
+        subprocess.run(command, capture_output=True, check=True)
 
-    dwi = DWISession(
-        session_source_root='/run/media/i/ADATA HV620S/rel3_dhcp_dmri_eddy_pipeline/sub-CC00063AN06/ses-15102',
-        session_target_root='/run/media/i/ADATA HV620S/connectomes/sub-CC00063AN06-ses-15102'
-    )
-    # dwi.convert_dwi_nii_to_mif()
-    # dwi.convert_mask_to_mif()
-    # dwi.dwi_to_response()
-    # dwi.calculate_fod()
-    # dwi.combine_fods(view=False)
-    # dwi.normalize_fods()
-    anat = AnatomicalSession(
-        # It is important to discard the last '/' of a folder path
+    def __view_connectomes(self):
+        ws = pd.read_csv(self.target_weight_sum_connectome, header=None)
+        nws = pd.read_csv(self.target_volume_normalized_weight_sum_connectome, header=None)
+        fa = pd.read_csv(self.target_mean_FA_connectome, header=None)
+        ln = pd.read_csv(self.target_mean_length_connectome, header=None)
+        for i, df in enumerate([ws, nws, fa, ln]):
+            plt.matshow(df.to_numpy(), i)
+            plt.show()
+
+    def generate_connectome(self, view=False):
+        generate_weight_sum_command = [
+            'tck2connectome',
+            '-symmetric',
+            '-zero_diagonal',
+            '-tck_weights_in',
+            f'{self.target_sift_track_weights}',
+            f'{self.target_streamlines_1M}',
+            f'{self.anat_session.source_regional_segmentation_nii_gz}',
+            f'{self.target_weight_sum_connectome}'
+        ]
+        generate_normalized_weight_sum_command = [
+            'tck2connectome',
+            '-symmetric',
+            '-zero_diagonal',
+            '-scale_invnodevol',
+            '-tck_weights_in',
+            f'{self.target_sift_track_weights}',
+            f'{self.target_streamlines_1M}',
+            f'{self.anat_session.source_regional_segmentation_nii_gz}',
+            f'{self.target_volume_normalized_weight_sum_connectome}'
+        ]
+        # Mean FA connectome: two-step process
+        sample_mean_FA_command = [
+            'tcksample',
+            f'{self.target_streamlines_1M}',
+            f'{self.dwi_session.source_FA_nii_gz}',
+            f'{self.target_mean_FA_per_streamline_sample}',
+            '-stat_tck',
+            'mean'
+        ]
+        generate_mean_FA_connectome_command = [
+            'tck2connectome',
+            '-symmetric',
+            '-zero_diagonal',
+            f'{self.target_streamlines_1M}',
+            f'{self.anat_session.source_regional_segmentation_nii_gz}',
+            f'{self.target_mean_FA_connectome}',
+            '-scale_file',
+            f'{self.target_mean_FA_per_streamline_sample}',
+            '-stat_edge',
+            'mean'
+        ]
+        generate_mean_length = [
+            'tck2connectome',
+            '-symmetric',
+            '-zero_diagonal',
+            f'{self.target_streamlines_1M}',
+            f'{self.anat_session.source_regional_segmentation_nii_gz}',
+            f'{self.target_mean_length_connectome}',
+            '-scale_length',
+            '-stat_edge',
+            'mean'
+        ]
+        commands_list = [
+            generate_weight_sum_command,
+            generate_normalized_weight_sum_command,
+            sample_mean_FA_command,
+            generate_mean_FA_connectome_command,
+            generate_mean_length,
+        ]
+        for command in commands_list:
+            subprocess.run(command, capture_output=True, check=True, text=True)
+        if view:
+            self.__view_connectomes()
+
+
+class Job:
+    '''Encompasses the generation of the connectomes for a single subject-session pair.'''
+    def __init__(self, subject_name: str, session_name: str) -> None:
+        self.completed_jobs_file = os.path.join(COMPLETED_JOBS_FOLDER, f'{subject_name}-{session_name}')
+        # It is important to omit the last '/' of a folder path
         # Otherwise os.ptah.split will generate a '' at the tail
-        session_source_root='/run/media/i/ADATA HV620S/rel3_dhcp_anat_pipeline/sub-CC00063AN06/ses-15102',
-        session_target_root='/run/media/i/ADATA HV620S/connectomes/sub-CC00063AN06-ses-15102'
-    )
-    # anat.convert_t1w_nii_to_mif()
-    # anat.five_tissue_segmentation(view=False)
-    session = Session(dwi_session=dwi, anat_session=anat)
-    # session.coregister_dwi_anat(view=False)
-    # session.create_gmwm_seed_boundary(view=False)
-    session.generate_streamlines(number=1_000_000, nthreads=6, view=True)
+        self.dwi_session_source_root = os.path.join(DMRI_ROOT_PATH, subject_name, session_name)
+        self.anat_session_source_root = os.path.join(ANAT_ROOT_PATH, subject_name, session_name)
+        self.session_target_root = os.path.join(TARGET_ROOT_PATH, f'{subject_name}-{session_name}')
+
+    def __is_already_done(self):
+        return os.path.isfile(self.completed_jobs_file)
+
+    def __mark_complete(self):
+        subprocess.run(['touch', self.completed_jobs_file])
+
+    def run(self):
+        # I. Convert dwi NIFTI to .mif file
+        # II. Convert mask NIFTI to .mif file
+        # III. Run spherical deconv. to compute signal response in each tissue type, based on diffusion signal:
+        # - dhollander algorithm for multi-shell (bval) multi-tissue (gm, wm, csf)
+        # - additional output voxels.mif highlights which voxels were used to construct the signal response
+        #   - R=CSF, G=GM, B=WM
+        # IV. Calculate FOD based on the signal responses (basis functions) above
+        # V. (Optional) Concatenate and visualize FODs
+        # VI. Normalize FODs for proper group level usage (Do I need it in this use case?)
+        # VII. Convert anatomical T1w NIFTI to .mif file
+        # VIII. Tissue segmentation in order to determine wm/gm boundary (interface)
+        # - The MRTrix guide provides a 5 tissue segmentation example: GM, Subcortical GM, WM, CSF, Pathological
+        # - dHCP provides a 9 tissue segmentation in a similar manner,
+        #   but mapping some tissues to the ones above is not trivial for me, so I will ditch that for the moment.
+        #   The official MRTrix docs encourage using 5TT.
+        # - I will use 5ttgen which uses FSL for this goal
+        # IX. Coregistration (divided into substeps)
+        # X. Apply tissue bundary sgementation
+        # XI. Generate streamlines (ACT)
+        # XII. Filter (SIFT) to combat overfitting
+        # XIII. Generate connectome
+        # Mark job completed
+        if self.__is_already_done():
+            print('Process already completed. Skipping...')
+            return
+
+        dwi = DWISession(
+            session_source_root=self.dwi_session_source_root,
+            session_target_root=self.session_target_root
+        )
+        anat = AnatomicalSession(
+            session_source_root=self.anat_session_source_root,
+            session_target_root=self.session_target_root
+        )
+        session = Session(dwi_session=dwi, anat_session=anat)
+        dwi.convert_dwi_nii_to_mif()
+        dwi.convert_mask_to_mif()
+        dwi.dwi_to_response()
+        dwi.calculate_fod()
+        dwi.combine_fods(view=False)
+        dwi.normalize_fods()
+        anat.convert_t1w_nii_to_mif()
+        anat.five_tissue_segmentation(view=False)
+        session.coregister_dwi_anat(view=False)
+        session.create_gmwm_seed_boundary(view=False)
+        session.generate_streamlines(number=1_000_000, nthreads=6, view=False)
+        session.sift_filltering(nthreads=6)
+        session.generate_connectome(view=True)
+        self.__mark_complete()
+
+
+def main():
+    if not os.path.isdir(COMPLETED_JOBS_FOLDER):
+        os.mkdir(COMPLETED_JOBS_FOLDER)
+    # Job completion will be marked with a single 0B file called {subject}_{session} via 'touch' command
+    job = Job(subject_name='sub-CC00063AN06', session_name='ses-15102')
+    job.run()
 
 
 if __name__ == '__main__':
