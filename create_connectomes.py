@@ -2,8 +2,11 @@
 # - from a conda environment having mrtrix3
 # - having FSL installed on your system
 # - Python >= 3.9
+import multiprocessing
 import os
 import subprocess
+import sys
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import time
@@ -561,6 +564,38 @@ class Job:
             self.__mark_failed()  # won't fail unless 'touch FILE' command cannot be completed
 
 
+def get_job_params_list() -> list[tuple[str, str]]:
+    anat_df = pd.read_csv(os.path.join(ANAT_ROOT_PATH, 'participants.tsv'), sep='\t')
+    dwi_df = pd.read_csv(os.path.join(DMRI_ROOT_PATH, 'participants.tsv'), sep='\t')
+    participant_ids = set(anat_df['participant_id']) & set(dwi_df['participant_id'])
+    print(f'{len(participant_ids)} common participants')
+
+    job_param_list: list[tuple[str, str]] = []
+
+    for ID in participant_ids:
+        # Get common sessions
+        def not_tsv(fname: str): return not fname.endswith('.tsv')
+        anat_sessions = filter(not_tsv, os.listdir(os.path.join(ANAT_ROOT_PATH, f'sub-{ID}')))
+        dwi_sessions = filter(not_tsv, os.listdir(os.path.join(DMRI_ROOT_PATH, f'sub-{ID}')))
+        common_sessions = set(anat_sessions) & set(dwi_sessions)
+        common_job_params_list = [(f'sub-{ID}', session) for session in common_sessions]
+        job_param_list.extend(common_job_params_list)
+
+    print(f'{len(job_param_list)} sessions in total.')
+    return job_param_list
+
+
+def make_and_run_job(params: tuple[str, str]):
+    start_time = time.time()
+    subject_name, session_name = params
+    job = Job(subject_name=subject_name, session_name=session_name)
+    job.run(nstreamlines=1_000_000, nthreads=6, print_status=False)
+    end_time = time.time()
+    elapsed_time = int(end_time - start_time)
+    print(f'Elapsed time: {elapsed_time // 60} minutes {elapsed_time % 60} seconds')
+    sys.stdout.flush()
+
+
 def main():
     # Job completion will be marked with a single 0B file called {subject}_{session} via 'touch' command
     if not os.path.isdir(COMPLETED_JOBS_FOLDER):
@@ -568,26 +603,12 @@ def main():
     # Job failure will be marked in a similar way
     if not os.path.isdir(FAILED_JOBS_FOLDER):
         os.mkdir(FAILED_JOBS_FOLDER)
+
     # Jobs list
-    job_param_list = [
-        ('sub-CC00080XX07', 'ses-30300'),
-        ('sub-CC00063AN06', 'ses-15102'),
-        ('sub-CC00088XX15', 'ses-31801'),
-        ('sub-CC00105XX06', 'ses-35801'),
-        ('sub-CC00127XX12', 'ses-43200'),
-        ('bullshit', 'bullshit'),
-        ('sub-CC00139XX16', 'ses-49101')
-    ]
+    job_param_list = get_job_params_list()
 
-    start_time = time.time()
-
-    for subject, session in job_param_list:
-        job = Job(subject_name=subject, session_name=session)
-        job.run(nstreamlines=1_000_000, nthreads=6, print_status=True)
-
-    end_time = time.time()
-    elapsed_time = int(end_time - start_time)
-    print(f'Elapsed time: {elapsed_time // 60} minutes {elapsed_time % 60} seconds')
+    with multiprocessing.Pool(processes=2) as pool:
+        pool.map(make_and_run_job, job_param_list)
 
 
 if __name__ == '__main__':
