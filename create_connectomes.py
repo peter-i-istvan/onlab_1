@@ -211,6 +211,10 @@ class Session:
         self.target_5tt_coreg_mif = os.path.join(self.session_target_root, '5tt_coreg.mif')
         # Tissue boundary seed
         self.target_boundary_seed_mif = os.path.join(self.session_target_root, 'gmwmSeed_coreg.mif')
+        # Streamlines: 1M (the tutorial said 10M, but that is an adult brain)
+        self.target_streamlines_1M = os.path.join(self.session_target_root, 'tracks_1M.tck')
+        # Subsample of streamlines:
+        self.target_streamlines_subsample = os.path.join(self.session_target_root, 'smallerTracks_500k.tck')
 
     def __get_mean_b0(self):
         '''Calculates mean signal values for bval=0 slices along the time axis.
@@ -314,9 +318,38 @@ class Session:
             ]
             subprocess.run(command, capture_output=True, check=True)
 
-    def generate_streamlines(self, number: int = 10_000_000):
-        pass
-
+    def generate_streamlines(self, number: int = 1_000_000, nthreads: int = 6, view=False):
+        command = [
+            'tckgen',
+            '-act',
+            f'{self.target_5tt_coreg_mif}',
+            '-backtrack',
+            '-seed_gmwmi',
+            f'{self.target_boundary_seed_mif}',
+            '-nthreads',
+            str(nthreads),
+            '-maxlength',
+            '250',
+            '-cutoff',
+            '0.06',
+            '-select',
+            str(number),
+            f'{self.dwi_session.target_normalized_wm_fod_mif}',
+            f'{self.target_streamlines_1M}'
+        ]
+        subprocess.run(command, capture_output=True, check=True)
+        if view:
+            sample_command = [
+                'tckedit', f'{self.target_streamlines_1M}', '-number', '500k', f'{self.target_streamlines_subsample}'
+            ]
+            view_command = [
+                'mrview',
+                f'{self.dwi_session.target_dwi_mif}',
+                '-tractography.load',
+                f'{self.target_streamlines_subsample}'
+            ]
+            subprocess.run(sample_command, capture_output=True, check=True)
+            subprocess.run(view_command, capture_output=True, check=True)
 
 def main():
     # I. Convert dwi NIFTI to .mif file
@@ -361,6 +394,7 @@ def main():
     session = Session(dwi_session=dwi, anat_session=anat)
     # session.coregister_dwi_anat(view=False)
     # session.create_gmwm_seed_boundary(view=False)
+    session.generate_streamlines(number=1_000_000, nthreads=6, view=True)
 
 
 if __name__ == '__main__':
