@@ -2,6 +2,7 @@
 # - from a conda environment having mrtrix3
 # - having FSL installed on your system
 # - Python >= 3.9
+# - on Linux (I run the 'touch' shell command as a subprocess)
 import multiprocessing
 import os
 import subprocess
